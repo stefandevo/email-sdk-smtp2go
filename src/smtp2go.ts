@@ -1,4 +1,7 @@
+import { EmailProviderError, EmailValidationError } from "@opencoredev/email-sdk";
 import type {
+  EmailAddress,
+  EmailHeader,
   EmailMessage,
   EmailProvider,
   EmailProviderContext,
@@ -43,6 +46,38 @@ export type Smtp2goRaw = {
   region?: Smtp2goRegion;
 };
 
+type Smtp2goCustomHeader = {
+  header: string;
+  value: string;
+};
+
+type Smtp2goSendPayload = {
+  sender: string;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  html_body?: string;
+  text_body?: string;
+  custom_headers?: Smtp2goCustomHeader[];
+};
+
+type Smtp2goSendData = {
+  email_id?: unknown;
+  succeeded?: unknown;
+  failed?: unknown;
+  failures?: unknown;
+  error_code?: unknown;
+  error?: unknown;
+};
+
+type Smtp2goSendResponseBody = {
+  data?: Smtp2goSendData;
+  error_code?: unknown;
+  error?: unknown;
+  [key: string]: unknown;
+};
+
 function readEnv(name: string): string | undefined {
   const env = (
     globalThis as { process?: { env?: Record<string, string | undefined> } }
@@ -70,14 +105,240 @@ function resolveBaseUrl(options: Smtp2goOptions): string {
   return SMTP2GO_DEFAULT_BASE_URL;
 }
 
+function arrayify<T>(value: T | T[] | undefined): T[] {
+  if (value === undefined) {
+    return [];
+  }
+  return Array.isArray(value) ? value : [value];
+}
+
+function formatAddress(address: EmailAddress): string {
+  if (typeof address === "string") {
+    return address;
+  }
+  if (!address.name) {
+    return address.email;
+  }
+  return `${formatDisplayName(address.name)} <${address.email}>`;
+}
+
+function formatAddresses(addresses: EmailAddress | EmailAddress[] | undefined): string[] {
+  return arrayify(addresses).map(formatAddress);
+}
+
+function formatDisplayName(name: string): string {
+  if (!/[",\\]/.test(name)) {
+    return name;
+  }
+  return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function headersToCustomHeaders(
+  headers: EmailMessage["headers"],
+): Smtp2goCustomHeader[] {
+  if (!headers) {
+    return [];
+  }
+  const headerEntries: EmailHeader[] = Array.isArray(headers)
+    ? headers
+    : Object.entries(headers).map(([name, value]) => ({ name, value }));
+
+  return headerEntries.map((header) => ({
+    header: header.name,
+    value: header.value,
+  }));
+}
+
+function hasValues(value: unknown): boolean {
+  if (!value) {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  if (typeof value === "object") {
+    return Object.keys(value).length > 0;
+  }
+  return true;
+}
+
+function assertMaxItems(field: string, values: unknown[], max: number): void {
+  if (values.length <= max) {
+    return;
+  }
+  throw new EmailValidationError(
+    `smtp2go only supports ${max} ${field}${max === 1 ? "" : "s"} per message.`,
+    { adapter: SMTP2GO_ADAPTER_SLUG, field, max, count: values.length },
+  );
+}
+
+function assertSupportedMessage(
+  message: EmailMessage,
+  context: EmailProviderContext,
+): void {
+  const unsupported = new Set<string>();
+  if (message.tags?.length) {
+    unsupported.add("tags");
+  }
+  if (hasValues(message.metadata)) {
+    unsupported.add("metadata");
+  }
+  if (message.idempotencyKey || context.idempotencyKey) {
+    unsupported.add("idempotencyKey");
+  }
+  if (message.attachments?.length) {
+    unsupported.add("attachments");
+  }
+
+  if (unsupported.size > 0) {
+    throw new EmailValidationError(
+      `smtp2go does not support these EmailMessage fields: ${[...unsupported].join(", ")}.`,
+      { adapter: SMTP2GO_ADAPTER_SLUG, unsupported: [...unsupported] },
+    );
+  }
+
+  assertMaxItems("to recipient", formatAddresses(message.to), 100);
+  assertMaxItems("cc recipient", formatAddresses(message.cc), 100);
+  assertMaxItems("bcc recipient", formatAddresses(message.bcc), 100);
+}
+
+function toSmtp2goPayload(message: EmailMessage): Smtp2goSendPayload {
+  const customHeaders = headersToCustomHeaders(message.headers);
+  const replyTo = formatAddresses(message.replyTo);
+  if (replyTo.length > 0) {
+    customHeaders.push({
+      header: "Reply-To",
+      value: replyTo.join(", "),
+    });
+  }
+
+  return {
+    sender: formatAddress(message.from),
+    to: formatAddresses(message.to),
+    cc: optionalAddresses(message.cc),
+    bcc: optionalAddresses(message.bcc),
+    subject: message.subject,
+    html_body: message.html,
+    text_body: message.text,
+    custom_headers: customHeaders.length > 0 ? customHeaders : undefined,
+  };
+}
+
+function optionalAddresses(
+  addresses: EmailAddress | EmailAddress[] | undefined,
+): string[] | undefined {
+  const formatted = formatAddresses(addresses);
+  return formatted.length > 0 ? formatted : undefined;
+}
+
+async function readResponseBody(response: Response): Promise<Smtp2goSendResponseBody> {
+  const text = await response.text().catch(() => undefined);
+  if (!text) {
+    return {};
+  }
+  const json = parseJson(text);
+  return isRecord(json) ? json : { error: text };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+function extractError(body: Smtp2goSendResponseBody): {
+  code?: string;
+  message?: string;
+} {
+  const data = isRecord(body.data) ? body.data : undefined;
+  const code = firstString(data?.error_code, body.error_code);
+  const message = firstString(data?.error, body.error);
+  return { code, message };
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === "string");
+}
+
+function throwSmtp2goError(
+  body: Smtp2goSendResponseBody,
+  status?: number,
+): never {
+  const { code, message } = extractError(body);
+  const statusText = status === undefined ? "" : ` with ${status}`;
+  throw new EmailProviderError(
+    `smtp2go failed${statusText}: ${message ?? "SMTP2GO returned an error."}`,
+    {
+      provider: SMTP2GO_ADAPTER_SLUG,
+      status,
+      retryable: status === undefined ? false : isRetryableStatus(status),
+      details: body,
+      ...(code ? { code } : {}),
+    },
+  );
+}
+
+function assertSmtp2goSuccess(body: Smtp2goSendResponseBody): void {
+  const data = body.data;
+  if (!data) {
+    return;
+  }
+
+  if (typeof data.error === "string" || typeof data.error_code === "string") {
+    throwSmtp2goError(body);
+  }
+
+  const failed = typeof data.failed === "number" ? data.failed : 0;
+  const failures = Array.isArray(data.failures) ? data.failures : [];
+  if (failed > 0 || failures.length > 0) {
+    const detail = summarizeFailures(failures);
+    throw new EmailProviderError(
+      `smtp2go reported recipient failures${detail ? `: ${detail}` : "."}`,
+      {
+        provider: SMTP2GO_ADAPTER_SLUG,
+        retryable: false,
+        details: body,
+        code: "recipient_failed",
+      },
+    );
+  }
+}
+
+function summarizeFailures(failures: unknown[]): string | undefined {
+  const summary = failures
+    .map((failure) => {
+      if (!isRecord(failure)) {
+        return undefined;
+      }
+      const email = firstString(failure.email, failure.recipient);
+      const reason = firstString(failure.reason, failure.error, failure.message);
+      if (email && reason) {
+        return `${email}: ${reason}`;
+      }
+      return reason ?? email;
+    })
+    .filter((value): value is string => Boolean(value));
+  return summary.length > 0 ? summary.join("; ") : undefined;
+}
+
 /**
  * Create the SMTP2GO adapter — an {@link EmailProvider} named `smtp2go`.
  *
  * The factory validates the API key and resolves the base URL up front so that
- * misconfiguration fails fast. Translating an {@link EmailMessage} into the
- * SMTP2GO `/email/send` payload is intentionally deferred to a follow-up task;
- * `send` throws until that mapping lands, keeping this scaffold honest while the
- * surrounding wiring (slug, options, base URL, plugin) is in place.
+ * misconfiguration fails fast. `send` maps the normalized {@link EmailMessage}
+ * into SMTP2GO's `/email/send` JSON payload, forwards the caller's
+ * {@link AbortSignal}, and normalizes SMTP2GO API failures into
+ * {@link EmailProviderError}.
  */
 export function smtp2go(options: Smtp2goOptions = {}): EmailProvider<Smtp2goRaw> {
   const apiKey = resolveApiKey(options);
@@ -88,17 +349,35 @@ export function smtp2go(options: Smtp2goOptions = {}): EmailProvider<Smtp2goRaw>
     name: SMTP2GO_ADAPTER_SLUG,
     raw: { baseUrl, region: options.region },
     async send(
-      _message: EmailMessage,
-      _context: EmailProviderContext,
+      message: EmailMessage,
+      context: EmailProviderContext,
     ): Promise<EmailProviderResponse> {
-      // Reserved for the follow-up implementation: authenticate with the
-      // resolved API key and POST the mapped payload via the resolved fetcher.
-      void apiKey;
-      void fetcher;
-      throw new Error(
-        `smtp2go: message mapping is not implemented yet (scaffold). ` +
-          `Implement the payload mapping against POST ${baseUrl}${SMTP2GO_SEND_ENDPOINT}.`,
-      );
+      assertSupportedMessage(message, context);
+      const response = await fetcher(`${baseUrl}${SMTP2GO_SEND_ENDPOINT}`, {
+        method: "POST",
+        signal: context.signal,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-Smtp2go-Api-Key": apiKey,
+        },
+        body: JSON.stringify(toSmtp2goPayload(message)),
+      });
+      const body = await readResponseBody(response);
+
+      if (!response.ok) {
+        throwSmtp2goError(body, response.status);
+      }
+      assertSmtp2goSuccess(body);
+
+      const messageId =
+        typeof body.data?.email_id === "string" ? body.data.email_id : undefined;
+      return {
+        provider: SMTP2GO_ADAPTER_SLUG,
+        id: messageId,
+        messageId,
+        raw: body,
+      };
     },
   };
 }

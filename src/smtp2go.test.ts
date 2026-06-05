@@ -138,6 +138,43 @@ describe("smtp2go adapter", () => {
     });
   });
 
+  it("quotes display names that need escaping", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        data: {
+          email_id: "smtp2go-email-escaped",
+          succeeded: 1,
+          failed: 0,
+          failures: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+    const provider = smtp2go({ apiKey: "test-key", fetch: fetcher });
+
+    await provider.send(
+      {
+        from: { name: 'Doe, "Jane"', email: "jane@example.com" },
+        to: { name: "Smith, John", email: "john@example.com" },
+        replyTo: { name: 'Support "Team"', email: "support@example.com" },
+        subject: "Escaped names",
+        text: "Hello",
+      },
+      { attempt: 1 },
+    );
+
+    const [, init] = vi.mocked(fetcher).mock.calls[0]!;
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      sender: '"Doe, \\"Jane\\"" <jane@example.com>',
+      to: ['"Smith, John" <john@example.com>'],
+      custom_headers: [
+        {
+          header: "Reply-To",
+          value: '"Support \\"Team\\"" <support@example.com>',
+        },
+      ],
+    });
+  });
+
   it.each([
     ["tags", { tags: [{ name: "kind", value: "receipt" }] }, {}],
     ["metadata", { metadata: { accountId: "acct_123" } }, {}],

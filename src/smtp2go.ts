@@ -119,11 +119,18 @@ function formatAddress(address: EmailAddress): string {
   if (!address.name) {
     return address.email;
   }
-  return `${address.name} <${address.email}>`;
+  return `${formatDisplayName(address.name)} <${address.email}>`;
 }
 
 function formatAddresses(addresses: EmailAddress | EmailAddress[] | undefined): string[] {
   return arrayify(addresses).map(formatAddress);
+}
+
+function formatDisplayName(name: string): string {
+  if (!/[",\\]/.test(name)) {
+    return name;
+  }
+  return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 function headersToCustomHeaders(

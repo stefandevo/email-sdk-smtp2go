@@ -12,7 +12,7 @@
 npm install email-sdk-smtp2go @opencoredev/email-sdk
 ```
 
-`@opencoredev/email-sdk` is a peer dependency (`^0.4.0`), so your app and this
+`@opencoredev/email-sdk` is a peer dependency (`^0.6.1`), so your app and this
 adapter share a single copy of the core types.
 
 ## Usage

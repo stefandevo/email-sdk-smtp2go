@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { createEmailClient } from "@opencoredev/email-sdk";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createEmailClient, EmailProviderError } from "@opencoredev/email-sdk";
 
 import {
   smtp2go,
@@ -57,14 +57,216 @@ describe("smtp2go adapter", () => {
     expect(() => smtp2go()).toThrow(/missing API key/i);
   });
 
-  it("throws from send until message mapping is implemented", async () => {
-    const provider = smtp2go({ apiKey: "test-key" });
+  it("maps the EmailMessage to SMTP2GO's send payload", async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        data: {
+          email_id: "smtp2go-email-123",
+          succeeded: 1,
+          failed: 0,
+          failures: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+    const provider = smtp2go({
+      apiKey: "test-key",
+      baseUrl: "https://proxy.example.com/v3/",
+      fetch: fetcher,
+    });
+
+    const response = await provider.send(
+      {
+        from: { name: "Ada Lovelace", email: "ada@example.com" },
+        to: [{ name: "Grace Hopper", email: "grace@example.com" }],
+        cc: "cc@example.com",
+        bcc: { name: "Hidden", email: "hidden@example.com" },
+        replyTo: [
+          { name: "Replies", email: "reply@example.com" },
+          "reply-two@example.com",
+        ],
+        subject: "Hello from SMTP2GO",
+        html: "<p>Hello</p>",
+        text: "Hello",
+        headers: {
+          "X-Trace": "trace-1",
+        },
+      },
+      { attempt: 1, signal: controller.signal },
+    );
+
+    expect(fetcher).toHaveBeenCalledOnce();
+    const [url, init] = vi.mocked(fetcher).mock.calls[0]!;
+    expect(url).toBe("https://proxy.example.com/v3/email/send");
+    expect(init).toMatchObject({
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Smtp2go-Api-Key": "test-key",
+      },
+    });
+    expect(JSON.parse(init?.body as string)).toEqual({
+      sender: "Ada Lovelace <ada@example.com>",
+      to: ["Grace Hopper <grace@example.com>"],
+      cc: ["cc@example.com"],
+      bcc: ["Hidden <hidden@example.com>"],
+      subject: "Hello from SMTP2GO",
+      html_body: "<p>Hello</p>",
+      text_body: "Hello",
+      custom_headers: [
+        { header: "X-Trace", value: "trace-1" },
+        {
+          header: "Reply-To",
+          value: "Replies <reply@example.com>, reply-two@example.com",
+        },
+      ],
+    });
+    expect(response).toEqual({
+      provider: "smtp2go",
+      id: "smtp2go-email-123",
+      messageId: "smtp2go-email-123",
+      raw: {
+        data: {
+          email_id: "smtp2go-email-123",
+          succeeded: 1,
+          failed: 0,
+          failures: [],
+        },
+      },
+    });
+  });
+
+  it.each([
+    ["tags", { tags: [{ name: "kind", value: "receipt" }] }, {}],
+    ["metadata", { metadata: { accountId: "acct_123" } }, {}],
+    ["message idempotencyKey", { idempotencyKey: "idem_123" }, {}],
+    ["context idempotencyKey", {}, { idempotencyKey: "idem_123" }],
+    [
+      "attachments",
+      { attachments: [{ filename: "receipt.pdf", content: "pdf" }] },
+      {},
+    ],
+  ])("throws for unsupported non-empty %s", async (_name, messagePatch, contextPatch) => {
+    const provider = smtp2go({
+      apiKey: "test-key",
+      fetch: vi.fn() as unknown as typeof fetch,
+    });
+
     await expect(
       provider.send(
-        { from: "a@example.com", to: "b@example.com", subject: "hi" },
+        {
+          from: "from@example.com",
+          to: "to@example.com",
+          subject: "Unsupported field",
+          text: "Hello",
+          ...messagePatch,
+        },
+        { attempt: 1, ...contextPatch },
+      ),
+    ).rejects.toThrow(/does not support/i);
+  });
+
+  it("throws a normalized provider error for non-2xx responses", async () => {
+    const provider = smtp2go({
+      apiKey: "test-key",
+      fetch: vi.fn(async () =>
+        jsonResponse(
+          {
+            data: {
+              error_code: "bad_request",
+              error: "Sender address is invalid",
+            },
+          },
+          400,
+        ),
+      ) as unknown as typeof fetch,
+    });
+
+    await expect(
+      provider.send(
+        {
+          from: "from@example.com",
+          to: "to@example.com",
+          subject: "Bad sender",
+          text: "Hello",
+        },
         { attempt: 1 },
       ),
-    ).rejects.toThrow(/not implemented yet/i);
+    ).rejects.toMatchObject({
+      name: "EmailProviderError",
+      code: "bad_request",
+      provider: "smtp2go",
+      status: 400,
+      retryable: false,
+      message: expect.stringContaining("Sender address is invalid"),
+    } satisfies Partial<EmailProviderError>);
+  });
+
+  it("throws a normalized provider error for SMTP2GO data errors", async () => {
+    const provider = smtp2go({
+      apiKey: "test-key",
+      fetch: vi.fn(async () =>
+        jsonResponse({
+          data: {
+            error_code: "recipient_failed",
+            error: "Recipient rejected",
+          },
+        }),
+      ) as unknown as typeof fetch,
+    });
+
+    await expect(
+      provider.send(
+        {
+          from: "from@example.com",
+          to: "to@example.com",
+          subject: "Rejected",
+          text: "Hello",
+        },
+        { attempt: 1 },
+      ),
+    ).rejects.toMatchObject({
+      name: "EmailProviderError",
+      code: "recipient_failed",
+      provider: "smtp2go",
+      retryable: false,
+      message: expect.stringContaining("Recipient rejected"),
+    } satisfies Partial<EmailProviderError>);
+  });
+
+  it("throws when SMTP2GO reports recipient failures", async () => {
+    const provider = smtp2go({
+      apiKey: "test-key",
+      fetch: vi.fn(async () =>
+        jsonResponse({
+          data: {
+            email_id: "smtp2go-email-123",
+            succeeded: 0,
+            failed: 1,
+            failures: [{ email: "to@example.com", reason: "Suppressed" }],
+          },
+        }),
+      ) as unknown as typeof fetch,
+    });
+
+    await expect(
+      provider.send(
+        {
+          from: "from@example.com",
+          to: "to@example.com",
+          subject: "Recipient failure",
+          text: "Hello",
+        },
+        { attempt: 1 },
+      ),
+    ).rejects.toMatchObject({
+      name: "EmailProviderError",
+      provider: "smtp2go",
+      retryable: false,
+      message: expect.stringContaining("Suppressed"),
+    } satisfies Partial<EmailProviderError>);
   });
 });
 
@@ -80,3 +282,10 @@ describe("smtp2goPlugin", () => {
     expect(smtp2goPlugin({ apiKey: "test-key" }).id).toBe("smtp2go");
   });
 });
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}

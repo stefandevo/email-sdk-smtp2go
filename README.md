@@ -3,9 +3,9 @@
 [SMTP2GO](https://www.smtp2go.com/) adapter and plugin for
 [email-sdk.dev](https://email-sdk.dev) (`@opencoredev/email-sdk`).
 
-> **Status:** scaffold. The package wiring (adapter slug, options, base-URL
-> resolution, plugin) is in place. Translating messages into the SMTP2GO
-> `/email/send` payload lands in a follow-up — `send` throws until then.
+> **Status:** core send mapping is implemented. The adapter posts normalized
+> messages to SMTP2GO's `/email/send` endpoint; attachments and inline content
+> are planned for a follow-up task.
 
 ## Install
 

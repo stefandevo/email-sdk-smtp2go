@@ -1,6 +1,7 @@
 import { EmailProviderError, EmailValidationError } from "@opencoredev/email-sdk";
 import type {
   EmailAddress,
+  EmailAttachment,
   EmailHeader,
   EmailMessage,
   EmailProvider,
@@ -51,6 +52,17 @@ type Smtp2goCustomHeader = {
   value: string;
 };
 
+type Smtp2goAttachment = {
+  filename: string;
+  mimetype?: string;
+  fileblob?: string;
+  url?: string;
+};
+
+type Smtp2goInline = Smtp2goAttachment & {
+  cid: string;
+};
+
 type Smtp2goSendPayload = {
   sender: string;
   to: string[];
@@ -60,6 +72,14 @@ type Smtp2goSendPayload = {
   html_body?: string;
   text_body?: string;
   custom_headers?: Smtp2goCustomHeader[];
+  attachments?: Smtp2goAttachment[];
+  inlines?: Smtp2goInline[];
+};
+
+type Smtp2goAttachmentInput = EmailAttachment & {
+  cid?: string;
+  inline?: boolean;
+  url?: string;
 };
 
 type Smtp2goSendData = {
@@ -186,10 +206,6 @@ function assertSupportedMessage(
   if (message.idempotencyKey || context.idempotencyKey) {
     unsupported.add("idempotencyKey");
   }
-  if (message.attachments?.length) {
-    unsupported.add("attachments");
-  }
-
   if (unsupported.size > 0) {
     throw new EmailValidationError(
       `smtp2go does not support these EmailMessage fields: ${[...unsupported].join(", ")}.`,
@@ -202,7 +218,7 @@ function assertSupportedMessage(
   assertMaxItems("bcc recipient", formatAddresses(message.bcc), 100);
 }
 
-function toSmtp2goPayload(message: EmailMessage): Smtp2goSendPayload {
+async function toSmtp2goPayload(message: EmailMessage): Promise<Smtp2goSendPayload> {
   const customHeaders = headersToCustomHeaders(message.headers);
   const replyTo = formatAddresses(message.replyTo);
   if (replyTo.length > 0) {
@@ -211,6 +227,7 @@ function toSmtp2goPayload(message: EmailMessage): Smtp2goSendPayload {
       value: replyTo.join(", "),
     });
   }
+  const { attachments, inlines } = await toSmtp2goAttachments(message.attachments);
 
   return {
     sender: formatAddress(message.from),
@@ -221,7 +238,117 @@ function toSmtp2goPayload(message: EmailMessage): Smtp2goSendPayload {
     html_body: message.html,
     text_body: message.text,
     custom_headers: customHeaders.length > 0 ? customHeaders : undefined,
+    attachments: attachments.length > 0 ? attachments : undefined,
+    inlines: inlines.length > 0 ? inlines : undefined,
   };
+}
+
+async function toSmtp2goAttachments(
+  attachments: EmailAttachment[] | undefined,
+): Promise<{ attachments: Smtp2goAttachment[]; inlines: Smtp2goInline[] }> {
+  const smtp2goAttachments: Smtp2goAttachment[] = [];
+  const inlines: Smtp2goInline[] = [];
+
+  for (const attachment of attachments ?? []) {
+    const mapped = await toSmtp2goAttachment(attachment);
+    if (isInlineAttachment(attachment)) {
+      inlines.push({
+        ...mapped,
+        cid: inlineAttachmentCid(attachment),
+      });
+    } else {
+      smtp2goAttachments.push(mapped);
+    }
+  }
+
+  return { attachments: smtp2goAttachments, inlines };
+}
+
+async function toSmtp2goAttachment(
+  attachment: EmailAttachment,
+): Promise<Smtp2goAttachment> {
+  const extended = attachment as Smtp2goAttachmentInput;
+  const url = attachmentUrl(extended);
+  const base = {
+    filename: attachment.filename,
+    mimetype: attachment.contentType,
+  };
+
+  if (url && attachment.content === undefined) {
+    return {
+      ...base,
+      url,
+    };
+  }
+
+  return {
+    ...base,
+    fileblob: await attachmentContentToBase64(attachment),
+  };
+}
+
+async function attachmentContentToBase64(
+  attachment: EmailAttachment,
+): Promise<string> {
+  if (attachment.path) {
+    throw new EmailValidationError(
+      `Attachment "${attachment.filename}" path must be an http(s) URL or include content.`,
+      { adapter: SMTP2GO_ADAPTER_SLUG, field: "attachments" },
+    );
+  }
+  if (attachment.content === undefined) {
+    throw new EmailValidationError(
+      `Attachment "${attachment.filename}" requires content, path, or url.`,
+      { adapter: SMTP2GO_ADAPTER_SLUG, field: "attachments" },
+    );
+  }
+  if (typeof attachment.content === "string") {
+    return attachment.contentEncoding === "base64"
+      ? attachment.content
+      : bytesToBase64(new TextEncoder().encode(attachment.content));
+  }
+  if (typeof Blob !== "undefined" && attachment.content instanceof Blob) {
+    return bytesToBase64(new Uint8Array(await attachment.content.arrayBuffer()));
+  }
+  if (attachment.content instanceof ArrayBuffer) {
+    return bytesToBase64(new Uint8Array(attachment.content));
+  }
+  return bytesToBase64(attachment.content as Uint8Array);
+}
+
+function isInlineAttachment(attachment: EmailAttachment): boolean {
+  const extended = attachment as Smtp2goAttachmentInput;
+  return Boolean(
+    attachment.disposition === "inline" ||
+      attachment.contentId ||
+      extended.cid ||
+      extended.inline,
+  );
+}
+
+function inlineAttachmentCid(attachment: EmailAttachment): string {
+  const extended = attachment as Smtp2goAttachmentInput;
+  return attachment.contentId ?? extended.cid ?? attachment.filename;
+}
+
+function attachmentUrl(attachment: Smtp2goAttachmentInput): string | undefined {
+  if (attachment.url) {
+    return attachment.url;
+  }
+  return isHttpUrl(attachment.path) ? attachment.path : undefined;
+}
+
+function isHttpUrl(value: string | undefined): value is string {
+  return Boolean(value && /^https?:\/\//i.test(value));
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function optionalAddresses(
@@ -361,7 +488,7 @@ export function smtp2go(options: Smtp2goOptions = {}): EmailProvider<Smtp2goRaw>
           "Content-Type": "application/json",
           "X-Smtp2go-Api-Key": apiKey,
         },
-        body: JSON.stringify(toSmtp2goPayload(message)),
+        body: JSON.stringify(await toSmtp2goPayload(message)),
       });
       const body = await readResponseBody(response);
 

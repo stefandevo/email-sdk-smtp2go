@@ -252,6 +252,11 @@ describe("smtp2go adapter", () => {
         ...baseMessage(),
         attachments: [
           {
+            filename: "typed-path.pdf",
+            contentType: "application/pdf",
+            path: "https://cdn.example.com/typed-path.pdf",
+          },
+          {
             filename: "terms.pdf",
             contentType: "application/pdf",
             url: "https://cdn.example.com/terms.pdf",
@@ -264,6 +269,11 @@ describe("smtp2go adapter", () => {
     const [, init] = vi.mocked(fetcher).mock.calls[0]!;
     expect(JSON.parse(init?.body as string)).toMatchObject({
       attachments: [
+        {
+          filename: "typed-path.pdf",
+          mimetype: "application/pdf",
+          url: "https://cdn.example.com/typed-path.pdf",
+        },
         {
           filename: "terms.pdf",
           mimetype: "application/pdf",

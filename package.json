@@ -1,0 +1,54 @@
+{
+  "name": "email-sdk-smtp2go",
+  "version": "0.0.0",
+  "description": "SMTP2GO adapter and plugin for email-sdk.dev (@opencoredev/email-sdk).",
+  "type": "module",
+  "sideEffects": false,
+  "license": "MIT",
+  "author": "Stefan de Vogelaere",
+  "homepage": "https://github.com/stefandevo/email-sdk-smtp2go#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stefandevo/email-sdk-smtp2go.git"
+  },
+  "bugs": {
+    "url": "https://github.com/stefandevo/email-sdk-smtp2go/issues"
+  },
+  "keywords": [
+    "email",
+    "email-sdk",
+    "email-sdk-adapter",
+    "smtp2go",
+    "opencoredev",
+    "transactional-email"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "@opencoredev/email-sdk": "^0.4.0"
+  },
+  "devDependencies": {
+    "@opencoredev/email-sdk": "^0.4.0",
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.8"
+  }
+}

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEmailClient, EmailProviderError } from "@opencoredev/email-sdk";
+import type { EmailMessage } from "@opencoredev/email-sdk";
 
 import {
   smtp2go,
@@ -175,16 +176,173 @@ describe("smtp2go adapter", () => {
     });
   });
 
+  it("maps regular attachments to SMTP2GO attachments", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        data: {
+          email_id: "smtp2go-email-attachments",
+          succeeded: 1,
+          failed: 0,
+          failures: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+    const provider = smtp2go({ apiKey: "test-key", fetch: fetcher });
+
+    await provider.send(
+      {
+        ...baseMessage(),
+        attachments: [
+          {
+            filename: "receipt.txt",
+            content: "Order #123",
+            contentType: "text/plain",
+          },
+          {
+            filename: "encoded.pdf",
+            content: "cGRmLWRhdGE=",
+            contentEncoding: "base64",
+            contentType: "application/pdf",
+          },
+          {
+            filename: "bytes.bin",
+            content: new Uint8Array([0, 1, 2, 255]),
+          },
+        ],
+      },
+      { attempt: 1 },
+    );
+
+    const [, init] = vi.mocked(fetcher).mock.calls[0]!;
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      attachments: [
+        {
+          filename: "receipt.txt",
+          mimetype: "text/plain",
+          fileblob: "T3JkZXIgIzEyMw==",
+        },
+        {
+          filename: "encoded.pdf",
+          mimetype: "application/pdf",
+          fileblob: "cGRmLWRhdGE=",
+        },
+        {
+          filename: "bytes.bin",
+          fileblob: "AAEC/w==",
+        },
+      ],
+    });
+  });
+
+  it("passes URL attachments through to SMTP2GO attachments", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        data: {
+          email_id: "smtp2go-email-url-attachment",
+          succeeded: 1,
+          failed: 0,
+          failures: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+    const provider = smtp2go({ apiKey: "test-key", fetch: fetcher });
+
+    await provider.send(
+      {
+        ...baseMessage(),
+        attachments: [
+          {
+            filename: "typed-path.pdf",
+            contentType: "application/pdf",
+            path: "https://cdn.example.com/typed-path.pdf",
+          },
+          {
+            filename: "terms.pdf",
+            contentType: "application/pdf",
+            url: "https://cdn.example.com/terms.pdf",
+          },
+        ],
+      } as EmailMessage,
+      { attempt: 1 },
+    );
+
+    const [, init] = vi.mocked(fetcher).mock.calls[0]!;
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      attachments: [
+        {
+          filename: "typed-path.pdf",
+          mimetype: "application/pdf",
+          url: "https://cdn.example.com/typed-path.pdf",
+        },
+        {
+          filename: "terms.pdf",
+          mimetype: "application/pdf",
+          url: "https://cdn.example.com/terms.pdf",
+        },
+      ],
+    });
+  });
+
+  it("maps inline attachments to SMTP2GO inlines with cids", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        data: {
+          email_id: "smtp2go-email-inline",
+          succeeded: 1,
+          failed: 0,
+          failures: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+    const provider = smtp2go({ apiKey: "test-key", fetch: fetcher });
+
+    await provider.send(
+      {
+        ...baseMessage(),
+        html: '<p><img src="cid:logo-cid"></p><p><img src="cid:hero.png"></p>',
+        attachments: [
+          {
+            filename: "logo.png",
+            content: new Uint8Array([137, 80, 78, 71]),
+            contentType: "image/png",
+            contentId: "logo-cid",
+            disposition: "inline",
+          },
+          {
+            filename: "hero.png",
+            content: "hero-image",
+            contentType: "image/png",
+            inline: true,
+          },
+        ],
+      } as EmailMessage,
+      { attempt: 1 },
+    );
+
+    const [, init] = vi.mocked(fetcher).mock.calls[0]!;
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      inlines: [
+        {
+          filename: "logo.png",
+          mimetype: "image/png",
+          fileblob: "iVBORw==",
+          cid: "logo-cid",
+        },
+        {
+          filename: "hero.png",
+          mimetype: "image/png",
+          fileblob: "aGVyby1pbWFnZQ==",
+          cid: "hero.png",
+        },
+      ],
+    });
+  });
+
   it.each([
     ["tags", { tags: [{ name: "kind", value: "receipt" }] }, {}],
     ["metadata", { metadata: { accountId: "acct_123" } }, {}],
     ["message idempotencyKey", { idempotencyKey: "idem_123" }, {}],
     ["context idempotencyKey", {}, { idempotencyKey: "idem_123" }],
-    [
-      "attachments",
-      { attachments: [{ filename: "receipt.pdf", content: "pdf" }] },
-      {},
-    ],
   ])("throws for unsupported non-empty %s", async (_name, messagePatch, contextPatch) => {
     const provider = smtp2go({
       apiKey: "test-key",
@@ -325,4 +483,13 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function baseMessage(): EmailMessage {
+  return {
+    from: "from@example.com",
+    to: "to@example.com",
+    subject: "Attachments",
+    text: "Hello",
+  };
 }

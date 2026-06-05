@@ -3,9 +3,8 @@
 [SMTP2GO](https://www.smtp2go.com/) adapter and plugin for
 [email-sdk.dev](https://email-sdk.dev) (`@opencoredev/email-sdk`).
 
-> **Status:** core send mapping is implemented. The adapter posts normalized
-> messages to SMTP2GO's `/email/send` endpoint; attachments and inline content
-> are planned for a follow-up task.
+> **Status:** core send mapping, attachments, and inline images are implemented.
+> The adapter posts normalized messages to SMTP2GO's `/email/send` endpoint.
 
 ## Install
 
@@ -56,6 +55,41 @@ const email = createEmailClient({
 | `fetch`   | `typeof fetch`   | global `fetch`               | Custom fetch implementation.                           |
 
 The API key is read from `SMTP2GO_API_KEY` when `apiKey` is omitted.
+
+## Attachments And Inline Images
+
+Attachments are mapped to SMTP2GO `attachments[]` entries. Raw string, binary,
+`ArrayBuffer`, `Blob`, and Base64-encoded content are sent as Base64 `fileblob`
+values. URL-backed attachments can be supplied with a `url` field or an
+`http(s)` `path`, and are passed through as SMTP2GO `url` values.
+
+```ts
+await email.send({
+  from: "from@example.com",
+  to: "to@example.com",
+  subject: "Receipt",
+  text: "Thanks",
+  html: '<p><img src="cid:logo"></p>',
+  attachments: [
+    {
+      filename: "receipt.pdf",
+      content: pdfBytes,
+      contentType: "application/pdf",
+    },
+    {
+      filename: "logo.png",
+      content: logoBytes,
+      contentType: "image/png",
+      contentId: "logo",
+      disposition: "inline",
+    },
+  ],
+});
+```
+
+Inline images are mapped to SMTP2GO `inlines[]`. The CID is chosen from
+`contentId`, then `cid`, then the filename when an attachment is marked inline
+without an explicit CID.
 
 ## Development
 

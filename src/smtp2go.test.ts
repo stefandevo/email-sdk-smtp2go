@@ -471,6 +471,7 @@ describe("smtp2goPlugin", () => {
       plugins: [smtp2goPlugin({ apiKey: "test-key" })],
     });
     expect(email.adapters.has("smtp2go")).toBe(true);
+    expect(email.defaultAdapter).toBe("smtp2go");
   });
 
   it("uses `smtp2go` as the plugin id", () => {

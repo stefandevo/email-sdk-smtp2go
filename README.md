@@ -6,6 +6,15 @@
 > **Status:** core send mapping, attachments, and inline images are implemented.
 > The adapter posts normalized messages to SMTP2GO's `/email/send` endpoint.
 
+## Reference Docs
+
+- [Email SDK adapter-authoring guide](https://email-sdk.dev/docs/guides/authoring/create-adapter)
+- [Email SDK adapter contract](https://email-sdk.dev/docs/reference/adapter-contract)
+- [Email SDK community adapter guide](https://email-sdk.dev/docs/guides/authoring/publish-community-adapter)
+- [SMTP2GO `/email/send` guide](https://developers.smtp2go.com/docs/send-an-email)
+- [SMTP2GO `/email/send` API reference](https://developers.smtp2go.com/reference/send-standard-email)
+- [SMTP2GO attachment guide](https://developers.smtp2go.com/docs/adding-attachments)
+
 ## Install
 
 ```sh
@@ -29,6 +38,7 @@ const email = createEmailClient({
 
 // The `smtp2go` adapter is now registered:
 email.adapters.has("smtp2go"); // true
+email.defaultAdapter; // "smtp2go"
 ```
 
 ### Adapter (advanced)
@@ -55,6 +65,23 @@ const email = createEmailClient({
 | `fetch`   | `typeof fetch`   | global `fetch`               | Custom fetch implementation.                           |
 
 The API key is read from `SMTP2GO_API_KEY` when `apiKey` is omitted.
+
+## Field Support
+
+Unsupported non-empty Email SDK fields throw before sending. This keeps fallback
+routes from silently losing message data that SMTP2GO cannot represent.
+
+| Field | Support | Notes |
+| --- | --- | --- |
+| `html`, `text` | Yes | Mapped to SMTP2GO `html_body` and `text_body`. |
+| `cc`, `bcc` | Yes | Mapped to SMTP2GO recipient arrays. |
+| `replyTo` | Yes | Appended as a `Reply-To` custom header. |
+| `headers` | Yes | Mapped to SMTP2GO `custom_headers`. |
+| `attachments` | Yes | Base64 `fileblob` entries or provider URL attachment entries. |
+| `inline` attachments | Yes | Mapped to SMTP2GO `inlines[]` with CID. |
+| `tags` | No | Throws when non-empty. |
+| `metadata` | No | Throws when non-empty. Use send-option metadata only for Email SDK hooks and observability. |
+| `idempotencyKey` | No | Throws because SMTP2GO does not expose compatible idempotency support. |
 
 ## Attachments And Inline Images
 

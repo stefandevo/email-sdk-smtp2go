@@ -3,88 +3,81 @@
 Publishing to npm is automated via [`.github/workflows/publish.yml`](./.github/workflows/publish.yml),
 which runs when a GitHub Release is published.
 
-The preferred auth path is npm Trusted Publishing (OIDC), so no long-lived
-`NPM_TOKEN` secret is required when the package is configured correctly on npm.
-The workflow also supports `NPM_TOKEN` as a fallback.
+Auth uses npm Trusted Publishing (OIDC) — there is **no `NPM_TOKEN` secret**.
+The workflow runs `npm ci`, `npm run typecheck`, `npm test`, `npm run build`,
+and `npm pack --dry-run`, then publishes with `--provenance`.
 
-## One-time npm setup
+## npm configuration (already done)
 
-Before the first release, configure Trusted Publishing for
-`email-sdk-smtp2go` on npm:
+Trusted Publishing is configured for `email-sdk-smtp2go` at
+<https://www.npmjs.com/package/email-sdk-smtp2go/access>:
 
-1. Go to `https://www.npmjs.com/package/email-sdk-smtp2go/access`.
-2. Add a Trusted Publisher.
-3. Choose **GitHub Actions**.
-4. Set the repository to `stefandevo/email-sdk-smtp2go`.
-5. Set the workflow filename to `publish.yml`.
-6. Leave the environment blank unless you protect releases with a GitHub
-   environment.
+- Provider: **GitHub Actions**
+- Repository: `stefandevo/email-sdk-smtp2go`
+- Workflow filename: `publish.yml`
+- Environment: blank (releases are not gated by a GitHub environment)
+- Allowed action: `npm publish`
 
-If Trusted Publishing is not available, add an npm automation token as the
-GitHub Actions secret `NPM_TOKEN`.
+**Publishing access** is set to "Require 2FA and disallow tokens", so a release
+can only come from this trusted publisher (CI) or an interactive 2FA login
+(manual). There is no long-lived token to leak or rotate.
+
+> First-publish note: a brand-new package must be published once manually
+> (`npm publish --access public`, with the registry owner logged in) before a
+> Trusted Publisher can be attached — npm only exposes the setting on an
+> existing package. This bootstrap was done for `0.1.0`; you should never need
+> to publish manually again. If the workflow file is renamed or the repo moves,
+> update the Trusted Publisher config on npm.
 
 ## Cut a release
 
-This package is currently prepared for its first release as `0.1.0`.
+1. Bump the version on a branch and open a PR against `develop`:
 
-After the release PR is merged:
+   ```bash
+   git checkout -b release-X.Y.Z
+   npm version patch --no-git-tag-version   # or: minor / major / X.Y.Z
+   git commit -am "Release X.Y.Z"
+   git push -u origin release-X.Y.Z
+   ```
 
-```bash
-git checkout develop
-git pull
-git tag v0.1.0
-git push origin v0.1.0
-```
+2. Merge the PR into `develop`.
 
-Then on GitHub:
+3. Create the GitHub Release — this is what triggers the publish:
 
-1. Go to **Releases** -> **Draft a new release**.
-2. Pick the tag you just pushed, for example `v0.1.0`.
-3. Click **Generate release notes**.
-4. Click **Publish release**.
+   ```bash
+   gh release create vX.Y.Z --target develop --title "vX.Y.Z" --generate-notes
+   ```
 
-Watch the **Actions** tab. When `Publish to npm` is green, verify npm:
+   Or in the UI: **Releases** → **Draft a new release** → tag `vX.Y.Z`,
+   target `develop` → **Generate release notes** → **Publish release**.
 
-```bash
-npm view email-sdk-smtp2go version
-npm view email-sdk-smtp2go repository.url peerDependencies --json
-```
+4. Watch the **Actions** tab. When `Publish to npm` is green, verify the
+   publish log shows `Signed provenance statement ... from GitHub Actions`, then:
 
-Then smoke-test a fresh install:
+   ```bash
+   npm view email-sdk-smtp2go version    # should match the new tag
+   ```
 
-```bash
-tmpdir=$(mktemp -d)
-cd "$tmpdir"
-npm init -y
-npm install email-sdk-smtp2go @opencoredev/email-sdk
-node -e "import('email-sdk-smtp2go').then(m => console.log(typeof m.smtp2go, typeof m.smtp2goPlugin))"
-```
+5. Smoke-test a fresh install:
 
-The final command should print:
+   ```bash
+   tmpdir=$(mktemp -d)
+   cd "$tmpdir"
+   npm init -y
+   npm install email-sdk-smtp2go @opencoredev/email-sdk
+   node -e "import('email-sdk-smtp2go').then(m => console.log(typeof m.smtp2go, typeof m.smtp2goPlugin))"
+   ```
 
-```text
-function function
-```
+   The final command should print:
 
-## Future releases
-
-For later releases, use `npm version` so `package.json`,
-`package-lock.json`, and the git tag stay aligned:
-
-```bash
-npm version patch -m "chore(release): %s"   # or: minor / major / X.Y.Z
-git push --follow-tags
-```
-
-Then publish a GitHub Release for the new tag.
+   ```text
+   function function
+   ```
 
 ## Notes
 
-- Do not publish `0.0.0`; npm versions are permanent once published.
-- `package.json` version and the git tag must agree.
-- The workflow runs `npm ci`, `npm run typecheck`, `npm test`,
-  `npm run build`, and `npm pack --dry-run` before publishing.
-- `npm publish --provenance --access public` expects a public GitHub-hosted
-  workflow and either Trusted Publishing or `NPM_TOKEN`.
-- If the workflow file is renamed or the repository moves, update the Trusted
-  Publisher configuration on npm.
+- npm versions are permanent once published — never republish a version, and
+  don't publish `0.0.0`.
+- The `package.json` version and the release tag must agree. The tag drives the
+  GitHub Release; `package.json` is what actually gets published.
+- `--provenance` requires a public repo or a paid npm org.

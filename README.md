@@ -126,6 +126,30 @@ npm run build   # tsc → dist/ (JS + type declarations)
 npm test        # vitest
 ```
 
+### Live Smoke Test
+
+Use the project-local smoke command to verify an SMTP2GO API key, sender, and
+recipient against the live SMTP2GO API. The command builds the package first and
+then imports the built adapter directly; it is intentionally separate from
+`npm test` so normal unit tests never require credentials or send email.
+
+```sh
+SMTP2GO_API_KEY="api-..." npm run smoke:send -- \
+  --from "Acme <hello@example.com>" \
+  --to "user@example.com" \
+  --subject "SMTP2GO smoke test" \
+  --text "It works"
+```
+
+Optional flags:
+
+- `--html "<p>It works</p>"` sends an HTML body.
+- `--region us` or `--region eu` selects an SMTP2GO data-residency endpoint.
+- `--base-url "https://proxy.example.com/v3"` overrides the SMTP2GO API base URL.
+
+On success, the command prints the provider, `id`, and `messageId` returned by
+Email SDK.
+
 ## License
 
 [MIT](./LICENSE)

@@ -1,4 +1,4 @@
-name: Publish Package
+name: Publish to npm
 
 on:
   release:
@@ -25,6 +25,9 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         run: npm ci
 
@@ -40,12 +43,7 @@ jobs:
       - name: Preview package contents
         run: npm pack --dry-run
 
-      - name: Publish to npm
+      - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
-            npm publish --provenance
-          else
-            npm publish
-          fi
+        run: npm publish --provenance --access public
